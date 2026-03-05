@@ -1,0 +1,15 @@
+[package]
+version = "0.1.0"
+title = "Orbit Core"
+description = "Reusable multi-body orbit simulation + control hooks."
+authors = ["SLI"]
+category = "Simulation"
+keywords = ["isaac-sim", "orbit", "rk4", "controls"]
+
+# [dependencies]
+# "omni.usd" = {}
+# "omni.kit.app" = {}
+# "omni.timeline" = {}
+
+[[python.module]]
+name = "com.ov.core"
