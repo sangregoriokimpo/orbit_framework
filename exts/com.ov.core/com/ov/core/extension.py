@@ -18,6 +18,9 @@ class OrbitCoreExtension(omni.ext.IExt):
         self._usd = omni.usd.get_context()
         self._timeline = omni.timeline.get_timeline_interface()
         self._svc = get_orbit_service()
+        stage = self._usd.get_stage()
+        if stage is not None:
+            self._svc.restore_from_stage(stage)
         self._update_sub = self._app.get_update_event_stream().create_subscription_to_pop(self._on_update)
         self._stage_event_sub = self._usd.get_stage_event_stream().create_subscription_to_pop(
             self._on_stage_event, name = "OrbitCore.StageEvent"
@@ -32,15 +35,24 @@ class OrbitCoreExtension(omni.ext.IExt):
         if self._stage_event_sub:
             self._stage_event_sub.unsubscribe()
             self._stage_event_sub = None
+        self._svc.clear_stage()
         print("[OrbitCore] shutdown")
 
     def _on_stage_event(self,e):
         from omni.usd import StageEventType
-        if e.type in (int(StageEventType.OPENED),
-                      int(StageEventType.CLOSED),
-                      int (StageEventType.SAVED)):
+        t = e.type
+        if t == int(StageEventType.OPENED):
+            stage = self._usd.get_stage()
+            if stage is not None:
+                self._svc.restore_from_stage(stage)
+        elif t == int(StageEventType.CLOSED):
+            self._svc.clear_stage()
             self._svc.reset()
-            print("[OrbitCore] Stage event - bodies cleared")
+        # if e.type in (int(StageEventType.OPENED),
+        #               int(StageEventType.CLOSED),
+        #               int (StageEventType.SAVED)):
+        #     self._svc.reset()
+        #     print("[OrbitCore] Stage event - bodies cleared")
 
 
     def _get_translate_op(self, stage, path: str):
@@ -70,6 +82,12 @@ class OrbitCoreExtension(omni.ext.IExt):
             stage = self._usd.get_stage()
             if stage is None:
                 return
+            if self._svc._stage is None:
+                self._svc.set_stage(stage)
+                for p in self._svc.list_bodies():
+                    b = self._svc.get_body(p)
+                    if b:
+                        self._svc._write(b)
 
             dt_frame = float(e.payload.get("dt", 0.0))
             if dt_frame <= 0.0:
