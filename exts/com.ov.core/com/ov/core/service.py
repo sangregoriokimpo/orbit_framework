@@ -126,6 +126,15 @@ class OrbitService:
                 a_cmd = (ax, ay, az)
 
             b.r, b.v = b._dyn.rk4_step(b.r, b.v, b.dt_sim, a_cmd=a_cmd)
+    
+    def reset(self):
+        self._bodies.clear()
+
+    def get_orbit_service() -> OrbitService:
+        global _SERVICE
+        if _SERVICE is None:
+            _SERVICE = OrbitService()
+        return _SERVICE
 
 
 _SERVICE: Optional[OrbitService] = None
