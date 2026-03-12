@@ -85,6 +85,8 @@ class OrbitService:
     def set_dock(self, prim_path, offset):
         b = self._bodies.get(prim_path)
         if b:
+            b._pre_dock_r = b.r
+            b._pre_dock_v = b.v
             b.control_mode = "dock"
             b.target_offset = offset
             self._write(b)
@@ -93,6 +95,8 @@ class OrbitService:
         b = self._bodies.get(prim_path)
         if b and b.control_mode == "dock":
             b.control_mode = "free"
+            b.r = getattr(b, "_pre_dock_r", b.r)
+            b.v = getattr(b, "_pre_dock_v", b.v)
             self._write(b)
 
     def set_pd_hold(self, prim_path, target_offset, kp, kd, a_max=0.0):
