@@ -20,6 +20,7 @@ class OrbitBody:
     kp: float = 0.0
     kd: float = 0.0
     a_max: float = 0.0
+    thrust: Vec3 = (0.0, 0.0, 0.0)
     enabled: bool = True
 
     _clock: FixedStepClock = field(default_factory=lambda: FixedStepClock(1/120))
@@ -124,13 +125,16 @@ class OrbitService:
             return
         counter = self._step_counters.get(prim_path, 0)
         for _ in range(n):
-            a_cmd = (0.0, 0.0, 0.0)
             if b.control_mode == "dock":
                 b.r = b.target_offset
                 b.v = (0.0, 0.0, 0.0)
                 counter += 1
                 continue
+
+            a_cmd = b.thrust  
+
             if b.control_mode == "pd":
+                import math
                 ex = b.target_offset[0] - b.r[0]
                 ey = b.target_offset[1] - b.r[1]
                 ez = b.target_offset[2] - b.r[2]
@@ -138,18 +142,43 @@ class OrbitService:
                 ay = b.kp * ey + b.kd * (0.0 - b.v[1])
                 az = b.kp * ez + b.kd * (0.0 - b.v[2])
                 if b.a_max and b.a_max > 0.0:
-                    import math
                     amag = math.sqrt(ax*ax + ay*ay + az*az)
                     if amag > b.a_max:
                         s = b.a_max / amag
                         ax, ay, az = ax*s, ay*s, az*s
-                a_cmd = (ax, ay, az)
+                a_cmd = (a_cmd[0]+ax, a_cmd[1]+ay, a_cmd[2]+az)
+
+            # b.r, b.v = b._dyn.rk4_step(b.r, b.v, b.dt_sim, a_cmd=a_cmd)
+            # counter += 1
             b.r, b.v = b._dyn.rk4_step(b.r, b.v, b.dt_sim, a_cmd=a_cmd)
-            counter += 1
-            if counter % 30 == 0:
-                self._write(b)
+            b._orbit_dirty = True
+            # b._orbit_dirty = True
+            # if a_cmd != (0.0,0.0,0.0):
+            #     b._orbit_dirty = True
+            # elif counter % 120 == 0:
+            #     b._orbit_dirty = True
+            # counter += 1
+            # if counter % 30 == 0:
+            #     self._write(b)
+
         self._step_counters[prim_path] = counter
         self._write(b)
+
+    # def set_teleop(self, prim_path: str):
+    #     b = self._bodies.get(prim_path)
+    #     if b:
+    #         b.control_mode = "teleop"
+    #         b.thrust = (0.0, 0.0, 0.0)
+
+    def set_thrust(self, prim_path: str, thrust: Vec3):
+        b = self._bodies.get(prim_path)
+        if b:
+            b.thrust = thrust
+
+    def clear_thrust(self, prim_path: str):
+        b = self._bodies.get(prim_path)
+        if b:
+            b.thrust = (0.0, 0.0, 0.0)
     
     # def reset(self):
     #     self._bodies.clear()

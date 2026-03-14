@@ -33,6 +33,66 @@ def rot_x(a: float, v: Vec3) -> Vec3:
     return (x, c * y - s * z, s * y + c * z)
 
 
+def rv_to_coe(mu: float, r: Vec3, v: Vec3):
+    """State vectors -> classical orbital elements (a, e, inc, raan, argp, nu). Angles in radians."""
+    import math
+    rmag = v_norm(r)
+    vmag = v_norm(v)
+
+    # specific orbital energy -> semi-major axis
+    energy = 0.5 * vmag*vmag - mu / rmag
+    a = -mu / (2.0 * energy)
+
+    # eccentricity vector
+    rv_dot = r[0]*v[0] + r[1]*v[1] + r[2]*v[2]
+    e_vec = (
+        (vmag*vmag - mu/rmag) * r[0]/mu - rv_dot * v[0]/mu,
+        (vmag*vmag - mu/rmag) * r[1]/mu - rv_dot * v[1]/mu,
+        (vmag*vmag - mu/rmag) * r[2]/mu - rv_dot * v[2]/mu,
+    )
+    e = v_norm(e_vec)
+
+    # angular momentum vector h = r x v
+    hx = r[1]*v[2] - r[2]*v[1]
+    hy = r[2]*v[0] - r[0]*v[2]
+    hz = r[0]*v[1] - r[1]*v[0]
+    hmag = math.sqrt(hx*hx + hy*hy + hz*hz)
+
+    # inclination
+    inc = math.acos(max(-1.0, min(1.0, hz / hmag)))
+
+    # node vector n = z x h = (-hy, hx, 0)
+    nx, ny = -hy, hx
+    nmag = math.sqrt(nx*nx + ny*ny)
+
+    # RAAN
+    if nmag > 1e-10:
+        raan = math.acos(max(-1.0, min(1.0, nx / nmag)))
+        if ny < 0:
+            raan = 2*math.pi - raan
+    else:
+        raan = 0.0
+
+    # argument of perigee
+    if nmag > 1e-10 and e > 1e-10:
+        n_dot_e = nx*e_vec[0] + ny*e_vec[1]
+        argp = math.acos(max(-1.0, min(1.0, n_dot_e / (nmag * e))))
+        if e_vec[2] < 0:
+            argp = 2*math.pi - argp
+    else:
+        argp = 0.0
+
+    # true anomaly
+    if e > 1e-10:
+        e_dot_r = e_vec[0]*r[0] + e_vec[1]*r[1] + e_vec[2]*r[2]
+        nu = math.acos(max(-1.0, min(1.0, e_dot_r / (e * rmag))))
+        if rv_dot < 0:
+            nu = 2*math.pi - nu
+    else:
+        nu = 0.0
+
+    return a, e, inc, raan, argp, nu
+
 def coe_to_rv(mu: float, a: float, e: float, inc_rad: float, raan_rad: float, argp_rad: float, nu_rad: float):
     """Classical orbital elements -> (r,v) in world/inertial frame. Angles in radians."""
     if a <= 0:
@@ -50,6 +110,7 @@ def coe_to_rv(mu: float, a: float, e: float, inc_rad: float, raan_rad: float, ar
     fac = math.sqrt(mu / p)
     v_pqw = (-fac * math.sin(nu_rad), fac * (e + math.cos(nu_rad)), 0.0)
 
+    # PQW -> world: Rz(raan) * Rx(i) * Rz(argp)
     r_world = rot_z(raan_rad, rot_x(inc_rad, rot_z(argp_rad, r_pqw)))
     v_world = rot_z(raan_rad, rot_x(inc_rad, rot_z(argp_rad, v_pqw)))
 
