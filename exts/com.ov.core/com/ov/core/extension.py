@@ -5,6 +5,7 @@ import omni.timeline
 from pxr import UsdGeom, Gf
 
 from .service import get_orbit_service
+from com.ov.core.CWIntegrator import lvlh_to_inertial
 
 
 class OrbitCoreExtension(omni.ext.IExt):
@@ -106,7 +107,19 @@ class OrbitCoreExtension(omni.ext.IExt):
                     continue
 
                 ax, ay, az = self._get_world_pos(aprim)
-                wx, wy, wz = ax + body.r[0], ay + body.r[1], az + body.r[2]
+                if body.control_mode == "cw" and body.cw_ref_path:
+                    ref = self._svc.get_body(body.cw_ref_path)
+                    if ref is not None:
+                        r_inertial = lvlh_to_inertial(body.r,ref.r,ref.v)
+                        wx = ax + ref.r[0] + r_inertial[0]
+                        wy = ay + ref.r[1] + r_inertial[1]
+                        wz = az + ref.r[2] + r_inertial[2]
+                    else:
+                        wx,wy,wz = ax + body.r[0], ay + body.r[1], az + body.r[2]
+                else:
+                    wx, wy, wz = ax + body.r[0], ay + body.r[1], az + body.r[2]   
+
+                # wx, wy, wz = ax + body.r[0], ay + body.r[1], az + body.r[2]
 
                 top = self._get_translate_op(stage, body.prim_path)
                 if top is None:

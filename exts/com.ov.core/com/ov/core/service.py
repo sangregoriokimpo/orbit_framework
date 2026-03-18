@@ -2,8 +2,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, List
 
-from .orbit_math import Vec3, TwoBodyRK4, FixedStepClock, circular_orbit_ic, coe_to_rv
-
+from .orbit_math import Vec3, TwoBodyRK4, FixedStepClock, circular_orbit_ic, coe_to_rv, v_add, v_mul, v_norm, v_sub
+from .CWIntegrator import cw_initial_conditions, CWIntegrator
+import math
 
 @dataclass
 class OrbitBody:
@@ -22,6 +23,8 @@ class OrbitBody:
     a_max: float = 0.0
     thrust: Vec3 = (0.0, 0.0, 0.0)
     enabled: bool = True
+
+    cw_ref_path: str = ""
 
     _clock: FixedStepClock = field(default_factory=lambda: FixedStepClock(1/120))
     _dyn: TwoBodyRK4 = field(default_factory=lambda: TwoBodyRK4(1.0))
@@ -130,11 +133,17 @@ class OrbitService:
                 b.v = (0.0, 0.0, 0.0)
                 counter += 1
                 continue
+            if b.control_mode == "cw":
+                cw = getattr(b,"_cw",None)
+                if cw is None:
+                    continue
+                b.r , b.v = cw.rk4_step(b.r,b.v,b.dt_sim,a_cmd=b.thrust)
+                b._orbit_dirty = True
+                continue
 
             a_cmd = b.thrust  
 
             if b.control_mode == "pd":
-                import math
                 ex = b.target_offset[0] - b.r[0]
                 ey = b.target_offset[1] - b.r[1]
                 ez = b.target_offset[2] - b.r[2]
@@ -206,12 +215,29 @@ class OrbitService:
                 r=data["r"], v=data["v"],
                 control_mode=data["control_mode"], target_offset=data["target_offset"],
                 kp=data["kp"], kd=data["kd"], a_max=data["a_max"], enabled=data["enabled"],
+                cw_ref_path=data.get("cw_ref_path","")
             )
             body._clock = FixedStepClock(dt_sim=data["dt_sim"])
             body._dyn = TwoBodyRK4(mu=data["mu"], center=(0.0, 0.0, 0.0))
+            if body.control_mode == "cw" and body.cw_ref_path:
+                ref = self._bodies.get(body.cw_ref_path)
+                if ref is not None:
+                    a_ref = v_norm(ref.r)
+                    n = math.sqrt(body.mu / a_ref**3)
+                    body._cw = CWIntegrator(n=n)
             self._bodies[data["prim_path"]] = body
             self._step_counters[data["prim_path"]] = 0
             count += 1
+        for body in self._bodies.values():
+            if body.control_mode == "cw" and body.cw_ref_path:
+                if not getattr(body,"_cw",None):
+                    ref = self._bodies.get(body.cw_ref_path)
+                    if ref is not None:
+                        a_ref = v_norm(ref.r)
+                        n = math.sqrt(body.mu / a_ref**3)
+                        body._cw = CWIntegrator(n=n)
+                    else:
+                        print(f"[OrbitService] WARNING: CW body {body.prim_path} ref {body.cw_ref_path} not found after restore")
         print(f"[OrbitService] Restored {count} body/bodies from stage")
         return count
 
@@ -223,6 +249,29 @@ class OrbitService:
             write_body_to_prim(self._stage, body)
         except Exception as e:
             print(f"[OrbitService] write error for {body.prim_path}: {e}")
+
+    def add_body_cw(self, prim_path: str, attractor_path: str, ref_path: str, mu: float,
+                    dt_sim: float, rho: float):
+        ref = self._bodies.get(ref_path)
+        if ref is None:
+            raise ValueError(f"Reference body {ref_path} not registered")
+        a_ref = v_norm(ref.r)
+        n = math.sqrt(mu / a_ref**3)
+        r0 , v0 = cw_initial_conditions(n, rho)
+        body = OrbitBody(prim_path=prim_path,
+                         attractor_path=attractor_path,
+                         mu=float(mu),
+                         dt_sim=float(dt_sim),
+                         r=r0,
+                         v=v0,
+                         control_mode="cw",
+                         cw_ref_path=ref_path)
+        body._clock = FixedStepClock(dt_sim=float(dt_sim))
+        body._cw = CWIntegrator(n=n)
+        self._step_counters[prim_path] = 0
+        self._bodies[prim_path] = body
+        self._write(body)
+        return body
 
     # def get_orbit_service() -> OrbitService:
     #     global _SERVICE

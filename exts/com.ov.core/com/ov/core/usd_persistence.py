@@ -41,9 +41,10 @@ ATTR_KP        = "orbit:kp"
 ATTR_KD        = "orbit:kd"
 ATTR_AMAX      = "orbit:a_max"
 ATTR_ENABLED   = "orbit:enabled"
+ATTR_CW_REF = "orbit:cw_ref_path"
 
 _ALL_ATTRS = (ATTR_ATTRACTOR, ATTR_MU, ATTR_DT_SIM, ATTR_R, ATTR_V,
-              ATTR_MODE, ATTR_TARGET, ATTR_KP, ATTR_KD, ATTR_AMAX, ATTR_ENABLED)
+              ATTR_MODE, ATTR_TARGET, ATTR_KP, ATTR_KD, ATTR_AMAX, ATTR_ENABLED,ATTR_CW_REF)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,7 @@ def write_body_to_prim(stage: Usd.Stage, body: "OrbitBody") -> bool:
         _get_or_create(prim, ATTR_KD,        Sdf.ValueTypeNames.Double ).Set(float(body.kd))
         _get_or_create(prim, ATTR_AMAX,      Sdf.ValueTypeNames.Double ).Set(float(body.a_max))
         _get_or_create(prim, ATTR_ENABLED,   Sdf.ValueTypeNames.Bool   ).Set(bool(body.enabled))
+        _get_or_create(prim, ATTR_CW_REF, Sdf.ValueTypeNames.String).Set(body.cw_ref_path)
 
     return True
 
@@ -133,6 +135,7 @@ def read_body_from_prim(stage: Usd.Stage, prim_path: str) -> Optional[dict]:
         kd             = float(_get(ATTR_KD,   0.0)),
         a_max          = float(_get(ATTR_AMAX, 0.0)),
         enabled        = bool(_get(ATTR_ENABLED, True)),
+        cw_ref_path = str(_get(ATTR_CW_REF, "")),
     )
 
 
