@@ -4,8 +4,11 @@ from typing import Dict, Optional, Tuple, List
 
 from .orbit_math import Vec3, TwoBodyRK4, FixedStepClock, circular_orbit_ic, coe_to_rv, v_add, v_mul, v_norm, v_sub
 from .CWIntegrator import cw_initial_conditions, CWIntegrator
-import math
+from .orbit_math import lvlh_frame, inertial_to_lvlh, lvlh_to_inertial, FixedStepClock, TwoBodyRK4
 
+import math
+import omni.usd
+from .usd_persistence import read_body_from_prim, scan_stage_for_bodies
 @dataclass
 class OrbitBody:
     prim_path: str
@@ -37,6 +40,12 @@ class OrbitService:
         self._step_counters: Dict[str,int] ={}
 
     def add_body_circular(self, prim_path, attractor_path, mu, dt_sim, radius, plane="xy"):
+        stage = omni.usd.get_context().get_stage()
+        if stage:
+            kwargs = read_body_from_prim(stage, prim_path) 
+            if kwargs:
+                return self.add_body_from_kwargs(**kwargs)
+                
         r0, v0 = circular_orbit_ic(mu, radius, plane=plane)
         body = OrbitBody(prim_path=prim_path, attractor_path=attractor_path,
                          mu=float(mu), dt_sim=float(dt_sim), r=r0, v=v0)
@@ -48,10 +57,18 @@ class OrbitService:
         self._bodies[prim_path] = body
         self._write(body)
         return body
+    
+    def add_body_from_kwargs(self, **kwargs) -> "OrbitBody":
+        body = OrbitBody(**kwargs)
+        body._clock = FixedStepClock(dt_sim=float(kwargs["dt_sim"]))
+        body._dyn = TwoBodyRK4(mu=float(kwargs["mu"]),center =(0.0,0.0,0.0))
+        self._bodies[kwargs["prim_path"]] = body
+        return body
+    
+
 
     def add_body_elements(self, prim_path, attractor_path, mu, dt_sim,
                           a, e, inc_deg, raan_deg, argp_deg, nu_deg):
-        import math
         r0, v0 = coe_to_rv(float(mu), float(a), float(e),
                             math.radians(float(inc_deg)), math.radians(float(raan_deg)),
                             math.radians(float(argp_deg)), math.radians(float(nu_deg)))
@@ -203,7 +220,6 @@ class OrbitService:
         self._step_counters.clear()
 
     def restore_from_stage(self, stage) -> int:
-        from .usd_persistence import scan_stage_for_bodies
         self._stage = stage
         self._bodies.clear()
         self._step_counters.clear()
@@ -272,6 +288,17 @@ class OrbitService:
         self._bodies[prim_path] = body
         self._write(body)
         return body
+    
+    def _step_cw(self,body: OrbitBody, dt: float):
+        ref = self._bodies.get(body.attractor_path)
+        if ref is None:
+            body.r , body.v = body._dyn.rk4_step(body.r,body.v)
+            return
+        R_hat, S_hat,W_hat , omega_vec = lvlh_frame(ref.r,ref.v)
+        dr_1, dv_1 = inertial_to_lvlh(body.r,body.v,R_hat,S_hat,W_hat,omega_vec)
+        dr_1, dv_1 = body._cw.rk4_step(dr_1,dv_1,dt)
+        body.r, body.v = lvlh_to_inertial(dr_1, dv_1,R_hat,S_hat,W_hat,omega_vec)
+
 
     # def get_orbit_service() -> OrbitService:
     #     global _SERVICE

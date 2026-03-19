@@ -42,6 +42,7 @@ ATTR_KD        = "orbit:kd"
 ATTR_AMAX      = "orbit:a_max"
 ATTR_ENABLED   = "orbit:enabled"
 ATTR_CW_REF = "orbit:cw_ref_path"
+_NS = "orbit"
 
 _ALL_ATTRS = (ATTR_ATTRACTOR, ATTR_MU, ATTR_DT_SIM, ATTR_R, ATTR_V,
               ATTR_MODE, ATTR_TARGET, ATTR_KP, ATTR_KD, ATTR_AMAX, ATTR_ENABLED,ATTR_CW_REF)
@@ -155,3 +156,51 @@ def scan_stage_for_bodies(stage: Usd.Stage) -> list:
         if data:
             results.append(data)
     return results
+
+def _attr(prim, name, default = None):
+    a = prim.GetAttribute(f"{_NS}:{name}")
+    if a and a.IsValid() and a.HasValue():
+        return a.Get()
+    return default
+
+def _set_attr(prim, name, value, type_name):
+    a = prim.GetAttribute(f"{_NS}:{name}")
+    if not (a and a.IsValid()):
+        a = prim.CreateAttribute(f"{_NS}:{name}",type_name,custom = True)
+    a.Set(value)
+
+def write_body_state(prim,body):
+    _set_attr(prim, "r", body.r, Sdf.ValueTypeNames.Double3)
+    _set_attr(prim, "v", body.v, Sdf.ValueTypeNames.Double3)
+    _set_attr(prim, "attractor", body.attractor_path, Sdf.ValueTypeNames.String)
+    _set_attr(prim, "mu", body.mu, Sdf.ValueTypeNames.Double)
+    _set_attr(prim, "dt_sim", body.dt_sim, Sdf.ValueTypeNames.Double)
+    _set_attr(prim, "control_mode", body.control_mode, Sdf.ValueTypeNames.String)
+
+def read_body_state(prim):
+    r = _attr(prim,"r")
+    if r is None:
+        return None
+    
+    def t3(v):
+        return (float(v[0]),float(v[1]),float(v[2]))
+    return dict(
+        prim_path      = str(prim.GetPath()),
+        attractor_path = _attr(prim, "attractor", ""),
+        mu             = _attr(prim, "mu", 980.665),
+        dt_sim         = _attr(prim, "dt_sim", 1/120),
+        r              = t3(r),
+        v              = t3(_attr(prim, "v", (0, 0, 0))),
+        control_mode   = _attr(prim, "control_mode", "free"),
+    )   
+
+def discover_bodies(stage):
+    found = []
+    for prim in stage.Traverse():
+        kwargs = read_body_state(prim)
+        if kwargs:
+            found.append(kwargs)
+    paths = {d["prim_path"] for d in found}
+    roots = [d for d in found if d["attractor_path"] not in paths]
+    leaves = [d for d in found if d["attractor_path"] in paths]
+    return roots + leaves
