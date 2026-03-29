@@ -29,6 +29,9 @@ class OrbitBody:
 
     cw_ref_path: str = ""
 
+    attitude_quat: tuple =(1.0,0.0,0.0,0.0)
+    thrust_model: object = None
+
     _clock: FixedStepClock = field(default_factory=lambda: FixedStepClock(1/120))
     _dyn: TwoBodyRK4 = field(default_factory=lambda: TwoBodyRK4(1.0))
 
@@ -136,6 +139,21 @@ class OrbitService:
             b.control_mode = "free"
             self._write(b)
 
+    def set_thrust_cmd(self, prim_path: str, throttle: float,
+                        gimbal_pitch_rad: float, gimbal_yaw_rad: float):
+            b = self._bodies.get(prim_path)
+            if not b or b.thrust_model is None:
+                return
+            b.thrust_model.throttle = max(0.0, min(1.0, throttle))
+            b.thrust_model.gimbal_pitch = gimbal_pitch_rad
+            b.thrust_model.gimbal_yaw = gimbal_yaw_rad
+            b.thrust_model.clamp_gimbal()
+
+    def set_attitude(self, prim_path: str, quat_wxyz: tuple):
+        b = self._bodies.get(prim_path)
+        if b:
+            b.attitude_quat = quat_wxyz
+
     def step_body(self, prim_path, dt_frame):
         b = self._bodies.get(prim_path)
         if not b or not b.enabled:
@@ -177,6 +195,13 @@ class OrbitService:
             # b.r, b.v = b._dyn.rk4_step(b.r, b.v, b.dt_sim, a_cmd=a_cmd)
             # counter += 1
             b.r, b.v = b._dyn.rk4_step(b.r, b.v, b.dt_sim, a_cmd=a_cmd)
+            if b.thrust_model is not None:
+                tv = b.thrust_model.delta_v(b.attitude_quat, b.dt_sim)
+                a_cmd = (
+                    a_cmd[0] + tv[0] / b.dt_sim,
+                    a_cmd[1] + tv[1] / b.dt_sim,
+                    a_cmd[2] + tv[2] / b.dt_sim,
+                )    
             b._orbit_dirty = True
             # b._orbit_dirty = True
             # if a_cmd != (0.0,0.0,0.0):
