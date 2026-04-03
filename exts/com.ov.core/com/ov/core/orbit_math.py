@@ -172,6 +172,70 @@ class TwoBodyRK4:
         v_next = add(v, mul(dt / 6.0, add(add(k1v, mul(2.0, k2v)), add(mul(2.0, k3v), k4v))))
         return r_next, v_next
 
+def v_cross(a: Vec3, b: Vec3) -> Vec3:
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+def v_dot(a: Vec3, b: Vec3) -> float:
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+
+def v_unit(a: Vec3) -> Vec3:
+    n = v_norm(a)
+    if n < 1e-12:
+        return (0.0,0.0,0.0)
+    return v_mul(1.0 / n , a)
+
+def lvlh_frame(r_ref: Vec3, v_ref: Vec3):
+    h = v_cross(r_ref, v_ref)
+    R_hat = v_unit(r_ref)
+    W_hat = v_unit(h)
+    S_hat = v_cross(W_hat,R_hat)
+
+    r_mag = v_norm(r_ref)
+    h_mag = v_norm(h)
+    omega_scalar = h_mag / (r_mag * r_mag) if r_mag > 1e-12 else 0.0
+    omega_vec = v_mul(omega_scalar,W_hat)
+    return R_hat, S_hat, W_hat, omega_vec
+
+def lvlh_to_inertial(dr_lvlh: Vec3, dv_lvlh: Vec3,
+                     R_hat: Vec3, S_hat: Vec3, W_hat: Vec3,
+                      omega_vec: Vec3):
+    def mat_vec(col0,col1,col2,vec):
+        return (
+            col0[0]*vec[0] + col1[0]*vec[1] + col2[0]*vec[2],
+            col0[1]*vec[0] + col1[1]*vec[1] + col2[1]*vec[2],
+            col0[2]*vec[0] + col1[2]*vec[1] + col2[2]*vec[2],
+        )
+    
+    r_i = mat_vec(R_hat, S_hat, W_hat, dr_lvlh)
+    v_rot = mat_vec(R_hat, S_hat, W_hat, dv_lvlh)
+
+    omega_cross_r = v_cross(omega_vec, r_i)
+    v_i = v_add(v_rot, omega_cross_r)
+
+    return r_i, v_i
+
+def inertial_to_lvlh(
+        dr_inertial: Vec3, dv_inertial: Vec3,
+        R_hat: Vec3, S_hat: Vec3, W_hat: Vec3,
+        omega_vec: Vec3,
+):
+    def mat_t_vec(col0,col1,col2,vec):
+        return(
+            v_dot(col0,vec),
+            v_dot(col1,vec),
+            v_dot(col2,vec)
+        )
+    
+    omega_cross_r = v_cross(omega_vec,dr_inertial)
+    v_rel = v_sub(dv_inertial, omega_cross_r)
+    dr_1 = mat_t_vec(R_hat,S_hat,W_hat,dr_inertial)
+    dv_1 = mat_t_vec(R_hat,S_hat,W_hat,v_rel)
+    return dr_1,dv_1
 
 @dataclass
 class FixedStepClock:

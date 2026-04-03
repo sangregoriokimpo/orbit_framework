@@ -2,9 +2,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, List
 
-from .orbit_math import Vec3, TwoBodyRK4, FixedStepClock, circular_orbit_ic, coe_to_rv
+from .orbit_math import Vec3, TwoBodyRK4, FixedStepClock, circular_orbit_ic, coe_to_rv, v_add, v_mul, v_norm, v_sub
+from .CWIntegrator import cw_initial_conditions, CWIntegrator
+from .orbit_math import lvlh_frame, inertial_to_lvlh, lvlh_to_inertial, FixedStepClock, TwoBodyRK4
 
-
+import math
+import omni.usd
+from .usd_persistence import read_body_from_prim, scan_stage_for_bodies
 @dataclass
 class OrbitBody:
     prim_path: str
@@ -23,6 +27,11 @@ class OrbitBody:
     thrust: Vec3 = (0.0, 0.0, 0.0)
     enabled: bool = True
 
+    cw_ref_path: str = ""
+
+    attitude_quat: tuple =(1.0,0.0,0.0,0.0)
+    thrust_model: object = None
+
     _clock: FixedStepClock = field(default_factory=lambda: FixedStepClock(1/120))
     _dyn: TwoBodyRK4 = field(default_factory=lambda: TwoBodyRK4(1.0))
 
@@ -34,6 +43,12 @@ class OrbitService:
         self._step_counters: Dict[str,int] ={}
 
     def add_body_circular(self, prim_path, attractor_path, mu, dt_sim, radius, plane="xy"):
+        stage = omni.usd.get_context().get_stage()
+        if stage:
+            kwargs = read_body_from_prim(stage, prim_path) 
+            if kwargs:
+                return self.add_body_from_kwargs(**kwargs)
+                
         r0, v0 = circular_orbit_ic(mu, radius, plane=plane)
         body = OrbitBody(prim_path=prim_path, attractor_path=attractor_path,
                          mu=float(mu), dt_sim=float(dt_sim), r=r0, v=v0)
@@ -45,10 +60,18 @@ class OrbitService:
         self._bodies[prim_path] = body
         self._write(body)
         return body
+    
+    def add_body_from_kwargs(self, **kwargs) -> "OrbitBody":
+        body = OrbitBody(**kwargs)
+        body._clock = FixedStepClock(dt_sim=float(kwargs["dt_sim"]))
+        body._dyn = TwoBodyRK4(mu=float(kwargs["mu"]),center =(0.0,0.0,0.0))
+        self._bodies[kwargs["prim_path"]] = body
+        return body
+    
+
 
     def add_body_elements(self, prim_path, attractor_path, mu, dt_sim,
                           a, e, inc_deg, raan_deg, argp_deg, nu_deg):
-        import math
         r0, v0 = coe_to_rv(float(mu), float(a), float(e),
                             math.radians(float(inc_deg)), math.radians(float(raan_deg)),
                             math.radians(float(argp_deg)), math.radians(float(nu_deg)))
@@ -116,6 +139,21 @@ class OrbitService:
             b.control_mode = "free"
             self._write(b)
 
+    def set_thrust_cmd(self, prim_path: str, throttle: float,
+                        gimbal_pitch_rad: float, gimbal_yaw_rad: float):
+            b = self._bodies.get(prim_path)
+            if not b or b.thrust_model is None:
+                return
+            b.thrust_model.throttle = max(0.0, min(1.0, throttle))
+            b.thrust_model.gimbal_pitch = gimbal_pitch_rad
+            b.thrust_model.gimbal_yaw = gimbal_yaw_rad
+            b.thrust_model.clamp_gimbal()
+
+    def set_attitude(self, prim_path: str, quat_wxyz: tuple):
+        b = self._bodies.get(prim_path)
+        if b:
+            b.attitude_quat = quat_wxyz
+
     def step_body(self, prim_path, dt_frame):
         b = self._bodies.get(prim_path)
         if not b or not b.enabled:
@@ -130,11 +168,17 @@ class OrbitService:
                 b.v = (0.0, 0.0, 0.0)
                 counter += 1
                 continue
+            if b.control_mode == "cw":
+                cw = getattr(b,"_cw",None)
+                if cw is None:
+                    continue
+                b.r , b.v = cw.rk4_step(b.r,b.v,b.dt_sim,a_cmd=b.thrust)
+                b._orbit_dirty = True
+                continue
 
             a_cmd = b.thrust  
 
             if b.control_mode == "pd":
-                import math
                 ex = b.target_offset[0] - b.r[0]
                 ey = b.target_offset[1] - b.r[1]
                 ez = b.target_offset[2] - b.r[2]
@@ -151,6 +195,13 @@ class OrbitService:
             # b.r, b.v = b._dyn.rk4_step(b.r, b.v, b.dt_sim, a_cmd=a_cmd)
             # counter += 1
             b.r, b.v = b._dyn.rk4_step(b.r, b.v, b.dt_sim, a_cmd=a_cmd)
+            if b.thrust_model is not None:
+                tv = b.thrust_model.delta_v(b.attitude_quat, b.dt_sim)
+                a_cmd = (
+                    a_cmd[0] + tv[0] / b.dt_sim,
+                    a_cmd[1] + tv[1] / b.dt_sim,
+                    a_cmd[2] + tv[2] / b.dt_sim,
+                )    
             b._orbit_dirty = True
             # b._orbit_dirty = True
             # if a_cmd != (0.0,0.0,0.0):
@@ -194,7 +245,6 @@ class OrbitService:
         self._step_counters.clear()
 
     def restore_from_stage(self, stage) -> int:
-        from .usd_persistence import scan_stage_for_bodies
         self._stage = stage
         self._bodies.clear()
         self._step_counters.clear()
@@ -206,12 +256,29 @@ class OrbitService:
                 r=data["r"], v=data["v"],
                 control_mode=data["control_mode"], target_offset=data["target_offset"],
                 kp=data["kp"], kd=data["kd"], a_max=data["a_max"], enabled=data["enabled"],
+                cw_ref_path=data.get("cw_ref_path","")
             )
             body._clock = FixedStepClock(dt_sim=data["dt_sim"])
             body._dyn = TwoBodyRK4(mu=data["mu"], center=(0.0, 0.0, 0.0))
+            if body.control_mode == "cw" and body.cw_ref_path:
+                ref = self._bodies.get(body.cw_ref_path)
+                if ref is not None:
+                    a_ref = v_norm(ref.r)
+                    n = math.sqrt(body.mu / a_ref**3)
+                    body._cw = CWIntegrator(n=n)
             self._bodies[data["prim_path"]] = body
             self._step_counters[data["prim_path"]] = 0
             count += 1
+        for body in self._bodies.values():
+            if body.control_mode == "cw" and body.cw_ref_path:
+                if not getattr(body,"_cw",None):
+                    ref = self._bodies.get(body.cw_ref_path)
+                    if ref is not None:
+                        a_ref = v_norm(ref.r)
+                        n = math.sqrt(body.mu / a_ref**3)
+                        body._cw = CWIntegrator(n=n)
+                    else:
+                        print(f"[OrbitService] WARNING: CW body {body.prim_path} ref {body.cw_ref_path} not found after restore")
         print(f"[OrbitService] Restored {count} body/bodies from stage")
         return count
 
@@ -223,6 +290,40 @@ class OrbitService:
             write_body_to_prim(self._stage, body)
         except Exception as e:
             print(f"[OrbitService] write error for {body.prim_path}: {e}")
+
+    def add_body_cw(self, prim_path: str, attractor_path: str, ref_path: str, mu: float,
+                    dt_sim: float, rho: float):
+        ref = self._bodies.get(ref_path)
+        if ref is None:
+            raise ValueError(f"Reference body {ref_path} not registered")
+        a_ref = v_norm(ref.r)
+        n = math.sqrt(mu / a_ref**3)
+        r0 , v0 = cw_initial_conditions(n, rho)
+        body = OrbitBody(prim_path=prim_path,
+                         attractor_path=attractor_path,
+                         mu=float(mu),
+                         dt_sim=float(dt_sim),
+                         r=r0,
+                         v=v0,
+                         control_mode="cw",
+                         cw_ref_path=ref_path)
+        body._clock = FixedStepClock(dt_sim=float(dt_sim))
+        body._cw = CWIntegrator(n=n)
+        self._step_counters[prim_path] = 0
+        self._bodies[prim_path] = body
+        self._write(body)
+        return body
+    
+    def _step_cw(self,body: OrbitBody, dt: float):
+        ref = self._bodies.get(body.attractor_path)
+        if ref is None:
+            body.r , body.v = body._dyn.rk4_step(body.r,body.v)
+            return
+        R_hat, S_hat,W_hat , omega_vec = lvlh_frame(ref.r,ref.v)
+        dr_1, dv_1 = inertial_to_lvlh(body.r,body.v,R_hat,S_hat,W_hat,omega_vec)
+        dr_1, dv_1 = body._cw.rk4_step(dr_1,dv_1,dt)
+        body.r, body.v = lvlh_to_inertial(dr_1, dv_1,R_hat,S_hat,W_hat,omega_vec)
+
 
     # def get_orbit_service() -> OrbitService:
     #     global _SERVICE
